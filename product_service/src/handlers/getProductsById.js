@@ -1,61 +1,65 @@
 // product_service/src/handlers/getProductsById.js
-
-const products = [
-  {
-    id: '1',
-    title: 'Product 1',
-    description: 'Description for product 1',
-    price: 10,
-  },
-  {
-    id: '2',
-    title: 'Product 2',
-    description: 'Description for product 2',
-    price: 20,
-  },
-  {
-    id: '3',
-    title: 'Product 3',
-    description: 'Description for product 3',
-    price: 30,
-  },
-];
+const AWS = require("aws-sdk");
+const dynamoDb = new AWS.DynamoDB.DocumentClient();
 
 exports.handler = async (event) => {
-  console.log('Incoming event:', event);
-
   try {
-    const { productId } = event.pathParameters || {};
-    const product = products.find((p) => p.id === productId);
+    console.log("Incoming Request:", event);
 
-    if (!product) {
+    const { productId } = event.pathParameters;
+    console.log(`Fetching product with ID: ${productId}`);
+
+    // Fetch product from Products table
+    const productData = await dynamoDb
+      .get({
+        TableName: process.env.PRODUCTS_TABLE,
+        Key: { id: productId },
+      })
+      .promise();
+
+    if (!productData.Item) {
+      console.log(`Product with ID ${productId} not found.`);
       return {
         statusCode: 404,
         headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "OPTIONS, GET",
+          "Access-Control-Allow-Headers": "Content-Type",
         },
-        body: JSON.stringify({ message: 'Product not found' }),
+        body: JSON.stringify({ message: "Product not found" }),
       };
     }
+
+    // Fetch stock information from Stocks table
+    const stockData = await dynamoDb
+      .get({
+        TableName: process.env.STOCKS_TABLE,
+        Key: { product_id: productId },
+      })
+      .promise();
+
+    const count = stockData.Item ? stockData.Item.count : 0;
+
+    // Construct response with product and stock count
+    const productWithStock = { ...productData.Item, count };
+
+    console.log("Returning product:", productWithStock);
 
     return {
       statusCode: 200,
       headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "OPTIONS, GET",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(product),
+      body: JSON.stringify(productWithStock),
     };
   } catch (error) {
-    console.error('Error processing getProductsById:', error);
+    console.error("Error fetching product by ID:", error);
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-      body: JSON.stringify({ message: 'Internal server error' }),
+      body: JSON.stringify({ message: "Internal Server Error" }),
     };
   }
 };
