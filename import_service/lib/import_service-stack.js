@@ -1,14 +1,15 @@
 const cdk = require('aws-cdk-lib');
+const lambda = require('aws-cdk-lib/aws-lambda-nodejs');
 const s3 = require('aws-cdk-lib/aws-s3');
-const lambda = require('aws-cdk-lib/aws-lambda');
-const apigateway = require('aws-cdk-lib/aws-apigateway');
+const sqs = require('aws-cdk-lib/aws-sqs');
 const s3n = require('aws-cdk-lib/aws-s3-notifications');
+const path = require('path');
 
 class ImportServiceStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    // Create S3 bucket with an auto-generated unique name
+    //  Create S3 Bucket for Importing Files
     const importBucket = new s3.Bucket(this, 'ImportBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
@@ -16,60 +17,59 @@ class ImportServiceStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     });
 
-    // Output the generated bucket name for reference
-    new cdk.CfnOutput(this, 'ImportBucketName', {
-      value: importBucket.bucketName,
+    new cdk.CfnOutput(this, 'ImportBucketName', { value: importBucket.bucketName });
+
+    //  Create SQS Queue for Processing Imported Data
+    const catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
+      visibilityTimeout: cdk.Duration.seconds(30),
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
     });
 
-    // Export bucket for use in Lambda functions via environment variables
-    this.importBucket = importBucket;
+    new cdk.CfnOutput(this, 'CatalogItemsQueueUrl', { value: catalogItemsQueue.queueUrl });
 
-    // Create Lambda function to generate signed URLs (importProductsFile)
-    const importProductsFileLambda = new lambda.Function(this, 'ImportProductsFileLambda', {
-      runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'importProductsFile.handler',
-      code: lambda.Code.fromAsset('lambda'),
+    //  Lambda Function: Generates Signed URLs for Uploading Files to S3
+    const importProductsFileLambda = new lambda.NodejsFunction(this, 'ImportProductsFileLambda', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'handler',
+      entry: path.join(__dirname, '../lambda/importProductsFile.js'),
       environment: {
         BUCKET_NAME: importBucket.bucketName,
       },
-    });
-
-    // Grant permission to put objects into the bucket
-    importBucket.grantPut(importProductsFileLambda);
-
-    // Create API Gateway REST API and integrate with the Lambda function
-    const api = new apigateway.RestApi(this, 'ImportApi', {
-      restApiName: 'Import Service API',
-    });
-
-    const importResource = api.root.addResource('import');
-    importResource.addMethod('GET', new apigateway.LambdaIntegration(importProductsFileLambda), {
-      requestParameters: {
-        'method.request.querystring.name': true,
+      bundling: {
+        nodeModules: ["@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner"],
       },
     });
 
-    // Output the API URL for easy reference
-    new cdk.CfnOutput(this, 'ImportApiUrl', {
-      value: api.url,
+    importBucket.grantPut(importProductsFileLambda);
+
+    //  Lambda Function: Processes Uploaded CSV Files and Sends Messages to SQS
+    const importFileParserLambda = new lambda.NodejsFunction(this, 'ImportFileParserLambda', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'handler',
+      entry: path.join(__dirname, '../lambda/importFileParser.js'),
+      environment: {
+        BUCKET_NAME: importBucket.bucketName,
+        SQS_URL: catalogItemsQueue.queueUrl,
+      },
+      bundling: {
+        nodeModules: ["@aws-sdk/client-s3", "@aws-sdk/client-sqs", "csv-parser"],
+      },
     });
 
-    // Create Lambda function to parse CSV files (importFileParser)
-    const importFileParserLambda = new lambda.Function(this, 'ImportFileParserLambda', {
-      runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'importFileParser.handler',
-      code: lambda.Code.fromAsset('lambda'),
-    });
-
-    // Grant permission to read objects from the bucket
     importBucket.grantRead(importFileParserLambda);
+    catalogItemsQueue.grantSendMessages(importFileParserLambda);
 
-    // Configure S3 event notifications for objects created in the 'uploaded/' folder
+    //  Configure S3 Event Notification to Trigger importFileParserLambda
     importBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3n.LambdaDestination(importFileParserLambda),
       { prefix: 'uploaded/' }
     );
+
+    //  Output API Gateway URL
+    new cdk.CfnOutput(this, 'ImportServiceApiUrl', {
+      value: `https://${this.region}.amazonaws.com/prod/import`,
+    });
   }
 }
 

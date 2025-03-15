@@ -1,6 +1,9 @@
-const AWS = require('aws-sdk');
-const csv = require('csv-parser');
-const s3 = new AWS.S3();
+const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const csv = require("csv-parser");
+
+const s3 = new S3Client({ region: "us-east-1" });
+const sqs = new SQSClient({ region: "us-east-1" });
 
 exports.handler = async (event) => {
   try {
@@ -9,18 +12,20 @@ exports.handler = async (event) => {
       const key = record.s3.object.key;
       const params = { Bucket: bucketName, Key: key };
 
-      const s3Stream = s3.getObject(params).createReadStream();
+      const { Body } = await s3.send(new GetObjectCommand(params));
+      const readableStream = Body.pipe(csv());
 
-      s3Stream.pipe(csv())
-        .on('data', (row) => {
-          console.log('Parsed row:', row);
-        })
-        .on('end', async () => {
-          console.log(`Finished processing file: ${key}`);
-          // Optional: Move the file from "uploaded/" to a "parsed/" folder if desired
-        });
+      for await (const row of readableStream) {
+        const sqsParams = {
+          QueueUrl: process.env.SQS_URL,
+          MessageBody: JSON.stringify(row),
+        };
+
+        await sqs.send(new SendMessageCommand(sqsParams));
+        console.log("Sent product to SQS:", row);
+      }
     }
   } catch (error) {
-    console.error('Error processing S3 event:', error);
+    console.error("Error processing file:", error);
   }
 };

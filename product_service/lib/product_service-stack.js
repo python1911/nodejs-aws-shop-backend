@@ -1,15 +1,18 @@
 const cdk = require('aws-cdk-lib');
-const lambda = require('aws-cdk-lib/aws-lambda');
+const lambda = require('aws-cdk-lib/aws-lambda-nodejs');
 const apigateway = require('aws-cdk-lib/aws-apigateway');
 const dynamodb = require('aws-cdk-lib/aws-dynamodb');
-const { Construct } = require('constructs');
+const sqs = require('aws-cdk-lib/aws-sqs');
+const sns = require('aws-cdk-lib/aws-sns');
+const snsSubscriptions = require('aws-cdk-lib/aws-sns-subscriptions');
+const eventSources = require('aws-cdk-lib/aws-lambda-event-sources');
 const path = require('path');
 
 class ProductServiceStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    // Create DynamoDB Tables
+    //  DynamoDB Tables
     const productsTable = new dynamodb.Table(this, 'ProductsTable', {
       tableName: 'products',
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
@@ -20,71 +23,78 @@ class ProductServiceStack extends cdk.Stack {
       partitionKey: { name: 'product_id', type: dynamodb.AttributeType.STRING },
     });
 
-    // Use the "handlers" folder (with package.json) as your Lambda asset source
-    const lambdaCodePath = path.join(__dirname, '../src/handlers');
+    //  SQS Queue
+    const catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
+      visibilityTimeout: cdk.Duration.seconds(30),
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+    });
 
-    // Bundling configuration: run npm install and copy all files
-    const bundlingConfig = {
-      image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-      command: [
-        'bash', '-c', 
-        'npm install && cp -r . /asset-output'
-      ],
+    //  SNS Topic & Email Subscription
+    const createProductTopic = new sns.Topic(this, 'CreateProductTopic');
+    createProductTopic.addSubscription(
+      new snsSubscriptions.EmailSubscription('your-email@example.com')
+    );
+
+    //  Lambda Config
+    const lambdaConfig = {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        PRODUCTS_TABLE: productsTable.tableName,
+        STOCKS_TABLE: stocksTable.tableName,
+        SQS_URL: catalogItemsQueue.queueUrl,
+        SNS_TOPIC_ARN: createProductTopic.topicArn,
+      },
+      bundling: {
+        nodeModules: ["@aws-sdk/client-dynamodb", "@aws-sdk/client-sqs", "@aws-sdk/client-sns"],
+      },
     };
 
-    // Create Lambda Functions using the bundling configuration
-    const getProductsListLambda = new lambda.Function(this, 'GetProductsListLambda', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'getProductsList.handler',
-      code: lambda.Code.fromAsset(lambdaCodePath, { bundling: bundlingConfig }),
-      environment: {
-        PRODUCTS_TABLE: productsTable.tableName,
-        STOCKS_TABLE: stocksTable.tableName,
-      },
+    //  Lambda Functions
+    const getProductsListLambda = new lambda.NodejsFunction(this, 'GetProductsListLambda', {
+      entry: path.join(__dirname, '../src/handlers/getProductsList.js'),
+      ...lambdaConfig
     });
 
-    const getProductsByIdLambda = new lambda.Function(this, 'GetProductsByIdLambda', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'getProductsById.handler',
-      code: lambda.Code.fromAsset(lambdaCodePath, { bundling: bundlingConfig }),
-      environment: {
-        PRODUCTS_TABLE: productsTable.tableName,
-        STOCKS_TABLE: stocksTable.tableName,
-      },
+    const getProductsByIdLambda = new lambda.NodejsFunction(this, 'GetProductsByIdLambda', {
+      entry: path.join(__dirname, '../src/handlers/getProductsById.js'),
+      ...lambdaConfig
     });
 
-    const createProductLambda = new lambda.Function(this, 'CreateProductLambda', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'createProduct.handler',
-      code: lambda.Code.fromAsset(lambdaCodePath, { bundling: bundlingConfig }),
-      environment: {
-        PRODUCTS_TABLE: productsTable.tableName,
-        STOCKS_TABLE: stocksTable.tableName,
-      },
+    const createProductLambda = new lambda.NodejsFunction(this, 'CreateProductLambda', {
+      entry: path.join(__dirname, '../src/handlers/createProduct.js'),
+      ...lambdaConfig
     });
 
-    // Grant the Lambda functions permission to access the tables
-    productsTable.grantReadWriteData(getProductsListLambda);
-    productsTable.grantReadWriteData(getProductsByIdLambda);
-    productsTable.grantReadWriteData(createProductLambda);
-    stocksTable.grantReadWriteData(getProductsListLambda);
-    stocksTable.grantReadWriteData(getProductsByIdLambda);
-    stocksTable.grantReadWriteData(createProductLambda);
+    const catalogBatchProcessLambda = new lambda.NodejsFunction(this, 'CatalogBatchProcessLambda', {
+      entry: path.join(__dirname, '../src/handlers/catalogBatchProcess.js'),
+      ...lambdaConfig
+    });
 
-    // Create API Gateway and define routes
+    //  Grant Permissions
+    productsTable.grantReadWriteData(catalogBatchProcessLambda);
+    stocksTable.grantReadWriteData(catalogBatchProcessLambda);
+    catalogItemsQueue.grantConsumeMessages(catalogBatchProcessLambda);
+    createProductTopic.grantPublish(catalogBatchProcessLambda);
+
+    //  API Gateway
     const api = new apigateway.RestApi(this, 'ProductApi', {
       restApiName: 'Product Service API',
     });
 
     const productsResource = api.root.addResource('products');
-    // GET /products
     productsResource.addMethod('GET', new apigateway.LambdaIntegration(getProductsListLambda));
-    // POST /products
     productsResource.addMethod('POST', new apigateway.LambdaIntegration(createProductLambda));
 
-    // GET /products/{productId}
     const productResource = productsResource.addResource('{productId}');
     productResource.addMethod('GET', new apigateway.LambdaIntegration(getProductsByIdLambda));
+
+    //  Add SQS Trigger
+    catalogBatchProcessLambda.addEventSource(new eventSources.SqsEventSource(catalogItemsQueue, {
+      batchSize: 5,
+    }));
+
+    //  Output API URL
+    new cdk.CfnOutput(this, 'ProductApiUrl', { value: api.url });
   }
 }
 

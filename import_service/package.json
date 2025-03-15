@@ -9,10 +9,10 @@
     "test": "jest"
   },
   "dependencies": {
+    "aws-cdk-lib": "^2.184.1",
     "aws-sdk": "^2.1360.0",
-    "csv-parser": "^3.0.0",
-    "aws-cdk-lib": "2.x",
-    "constructs": "^10.x"
+    "constructs": "^10.4.2",
+    "csv-parser": "^3.0.0"
   },
   "devDependencies": {
     "jest": "^29.7.0"
