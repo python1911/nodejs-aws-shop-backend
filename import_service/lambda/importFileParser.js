@@ -1,60 +1,51 @@
 const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
-const csv = require("csv-parser");
+const csvParser = require("csv-parser");
+const { Readable } = require("stream");
 
 const s3 = new S3Client({ region: "us-east-1" });
 const sqs = new SQSClient({ region: "us-east-1" });
 
 exports.handler = async (event) => {
-  console.log("🔹 Lambda triggered with event:", JSON.stringify(event, null, 2));
-
   try {
+    console.log("Event importFileParser:", JSON.stringify(event));
+
+    const catalogItemsQueueUrl = process.env.SQS_URL;
+
+    if (!catalogItemsQueueUrl) {
+      throw Error("Missing environment variable: SQS_URL");
+    }
+
     for (const record of event.Records) {
       const bucketName = record.s3.bucket.name;
-      const key = record.s3.object.key;
-      console.log(`📂 Processing file: s3://${bucketName}/${key}`);
+      const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
 
-      const { Body } = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
-      const readableStream = Body.pipe(csv());
+      const getObjectResponse = await s3.send(
+        new GetObjectCommand({ Bucket: bucketName, Key: key })
+      );
 
-      for await (const row of readableStream) {
-        console.log("🔍 Processing row:", row);
+      const fileStream = getObjectResponse.Body;
 
-        // Validate required fields
-        if (!row.title || !row.price || !row.count) {
-          console.warn(" Skipping row due to missing fields:", row);
-          continue;
-        }
+      const parsedProducts = [];
+      await new Promise((resolve, reject) => {
+        Readable.from(fileStream)
+          .pipe(csvParser())
+          .on("data", (row) => parsedProducts.push(row))
+          .on("error", reject)
+          .on("end", resolve);
+      });
 
-        // Ensure correct data types
-        const product = {
-          title: row.title.trim(),
-          price: parseFloat(row.price),
-          count: parseInt(row.count),
-        };
-
-        // Validate parsing
-        if (isNaN(product.price) || isNaN(product.count)) {
-          console.warn(" Invalid data format, skipping row:", row);
-          continue;
-        }
-
-        const sqsParams = {
-          QueueUrl: process.env.SQS_URL,
-          MessageBody: JSON.stringify(product),
-        };
-
-        try {
-          await sqs.send(new SendMessageCommand(sqsParams));
-          console.log(" Sent product to SQS:", product);
-        } catch (sqsError) {
-          console.error(" Failed to send message to SQS:", sqsError);
-        }
+      for (const product of parsedProducts) {
+        await sqs.send(
+          new SendMessageCommand({
+            QueueUrl: catalogItemsQueueUrl,
+            MessageBody: JSON.stringify(product),
+          })
+        );
+        console.log("Sent to SQS:", product);
       }
-
-      console.log(" Finished processing file:", key);
     }
   } catch (error) {
-    console.error(" Error processing file:", error);
+    console.error("Error processing file:", error);
   }
 };
