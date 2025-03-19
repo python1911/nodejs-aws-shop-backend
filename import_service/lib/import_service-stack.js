@@ -1,5 +1,6 @@
 const cdk = require('aws-cdk-lib');
-const lambda = require('aws-cdk-lib/aws-lambda-nodejs');
+const lambdaNodejs = require('aws-cdk-lib/aws-lambda-nodejs');
+const lambda = require('aws-cdk-lib/aws-lambda');
 const s3 = require('aws-cdk-lib/aws-s3');
 const sqs = require('aws-cdk-lib/aws-sqs');
 const s3n = require('aws-cdk-lib/aws-s3-notifications');
@@ -28,7 +29,7 @@ class ImportServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CatalogItemsQueueUrl', { value: catalogItemsQueue.queueUrl });
 
     //  Lambda Function: Generates Signed URLs for Uploading Files to S3
-    const importProductsFileLambda = new lambda.NodejsFunction(this, 'ImportProductsFileLambda', {
+    const importProductsFileLambda = new lambdaNodejs.NodejsFunction(this, 'ImportProductsFileLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'handler',
       entry: path.join(__dirname, '../lambda/importProductsFile.js'),
@@ -43,7 +44,7 @@ class ImportServiceStack extends cdk.Stack {
     importBucket.grantPut(importProductsFileLambda);
 
     //  Lambda Function: Processes Uploaded CSV Files and Sends Messages to SQS
-    const importFileParserLambda = new lambda.NodejsFunction(this, 'ImportFileParserLambda', {
+    const importFileParserLambda = new lambdaNodejs.NodejsFunction(this, 'ImportFileParserLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'handler',
       entry: path.join(__dirname, '../lambda/importFileParser.js'),

@@ -1,5 +1,6 @@
 const cdk = require('aws-cdk-lib');
-const lambda = require('aws-cdk-lib/aws-lambda-nodejs');
+const lambdaNodejs = require('aws-cdk-lib/aws-lambda-nodejs');
+const lambda = require('aws-cdk-lib/aws-lambda');
 const apigateway = require('aws-cdk-lib/aws-apigateway');
 const dynamodb = require('aws-cdk-lib/aws-dynamodb');
 const sqs = require('aws-cdk-lib/aws-sqs');
@@ -50,22 +51,22 @@ class ProductServiceStack extends cdk.Stack {
     };
 
     //  Lambda Functions
-    const getProductsListLambda = new lambda.NodejsFunction(this, 'GetProductsListLambda', {
+    const getProductsListLambda = new lambdaNodejs.NodejsFunction(this, 'GetProductsListLambda', {
       entry: path.join(__dirname, '../src/handlers/getProductsList.js'),
       ...lambdaConfig
     });
 
-    const getProductsByIdLambda = new lambda.NodejsFunction(this, 'GetProductsByIdLambda', {
+    const getProductsByIdLambda = new lambdaNodejs.NodejsFunction(this, 'GetProductsByIdLambda', {
       entry: path.join(__dirname, '../src/handlers/getProductsById.js'),
       ...lambdaConfig
     });
 
-    const createProductLambda = new lambda.NodejsFunction(this, 'CreateProductLambda', {
+    const createProductLambda = new lambdaNodejs.NodejsFunction(this, 'CreateProductLambda', {
       entry: path.join(__dirname, '../src/handlers/createProduct.js'),
       ...lambdaConfig
     });
 
-    const catalogBatchProcessLambda = new lambda.NodejsFunction(this, 'CatalogBatchProcessLambda', {
+    const catalogBatchProcessLambda = new lambdaNodejs.NodejsFunction(this, 'CatalogBatchProcessLambda', {
       entry: path.join(__dirname, '../src/handlers/catalogBatchProcess.js'),
       ...lambdaConfig
     });
