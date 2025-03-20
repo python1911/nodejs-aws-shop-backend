@@ -1,0 +1,30 @@
+{
+  "name": "product_service",
+  "version": "0.1.0",
+  "bin": {
+    "product_service": "bin/product_service.js"
+  },
+  "scripts": {
+    "build": "echo \"The build step is not required when using JavaScript!\" && exit 0",
+    "cdk": "cdk",
+    "test": "jest",
+    "populate": "node scripts/populateData.js"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.767.0",
+    "@aws-sdk/client-sns": "^3.758.0",
+    "@aws-sdk/lib-dynamodb": "^3.767.0",
+    "aws-cdk": "2.1000.2",
+    "aws-sdk-client-mock": "^4.1.0",
+    "jest": "^29.7.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
+    "@aws-sdk/client-sqs": "^3.758.0",
+    "@aws-sdk/s3-request-presigner": "^3.758.0",
+    "aws-cdk-lib": "^2.184.1",
+    "aws-sdk": "^2.1692.0",
+    "constructs": "^10.4.2",
+    "csv-parser": "^3.2.0"
+  }
+}
