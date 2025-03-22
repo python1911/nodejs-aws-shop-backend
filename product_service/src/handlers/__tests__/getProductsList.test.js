@@ -4,8 +4,10 @@ const { DynamoDBDocumentClient, ScanCommand } = require("@aws-sdk/lib-dynamodb")
 
 // Ensure Jest recognizes TableName for DynamoDB
 beforeAll(() => {
-  process.env.PRODUCTS_TABLE = "products";
+  process.env.PRODUCTS_TABLE = "products"; // Ensure table name is set
+  process.env.AWS_REGION = "us-east-1"; // Set default AWS region
 });
+
 
 const mockDynamoDB = mockClient(DynamoDBDocumentClient);
 

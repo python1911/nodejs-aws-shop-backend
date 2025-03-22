@@ -1,75 +1,99 @@
-const cdk = require('aws-cdk-lib');
-const lambdaNodejs = require('aws-cdk-lib/aws-lambda-nodejs');
+const { Stack, Duration } = require('aws-cdk-lib');
+const { NodejsFunction } = require('aws-cdk-lib/aws-lambda-nodejs');
+const {
+  RestApi,
+  TokenAuthorizer,
+  LambdaIntegration
+} = require('aws-cdk-lib/aws-apigateway');
 const lambda = require('aws-cdk-lib/aws-lambda');
 const s3 = require('aws-cdk-lib/aws-s3');
-const sqs = require('aws-cdk-lib/aws-sqs');
 const s3n = require('aws-cdk-lib/aws-s3-notifications');
+const sqs = require('aws-cdk-lib/aws-sqs');
 const path = require('path');
+require('dotenv').config();
 
-class ImportServiceStack extends cdk.Stack {
+class ImportServiceStack extends Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    //  Create S3 Bucket for Importing Files
-    const importBucket = new s3.Bucket(this, 'ImportBucket', {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      publicReadAccess: false,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-    });
+    // 1) S3 bucket
+    const importBucket = new s3.Bucket(this, 'ImportBucket');
 
-    new cdk.CfnOutput(this, 'ImportBucketName', { value: importBucket.bucketName });
+    // 2) SQS queue
+    const catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue');
 
-    //  Create SQS Queue for Processing Imported Data
-    const catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
-      visibilityTimeout: cdk.Duration.seconds(30),
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
-
-    new cdk.CfnOutput(this, 'CatalogItemsQueueUrl', { value: catalogItemsQueue.queueUrl });
-
-    //  Lambda Function: Generates Signed URLs for Uploading Files to S3
-    const importProductsFileLambda = new lambdaNodejs.NodejsFunction(this, 'ImportProductsFileLambda', {
+    // 3) importProductsFile Lambda
+    const importProductsFileLambda = new NodejsFunction(this, 'ImportProductsFileLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
+      entry: path.join(__dirname, '../src/handlers/importProductsFile.js'),
       handler: 'handler',
-      entry: path.join(__dirname, '../lambda/importProductsFile.js'),
       environment: {
         BUCKET_NAME: importBucket.bucketName,
       },
-      bundling: {
-        nodeModules: ["@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner"],
-      },
     });
 
-    importBucket.grantPut(importProductsFileLambda);
-
-    //  Lambda Function: Processes Uploaded CSV Files and Sends Messages to SQS
-    const importFileParserLambda = new lambdaNodejs.NodejsFunction(this, 'ImportFileParserLambda', {
+    // 4) importFileParser Lambda
+    const importFileParserLambda = new NodejsFunction(this, 'ImportFileParserLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
+      entry: path.join(__dirname, '../src/handlers/importFileParser.js'),
       handler: 'handler',
-      entry: path.join(__dirname, '../lambda/importFileParser.js'),
       environment: {
         BUCKET_NAME: importBucket.bucketName,
         SQS_URL: catalogItemsQueue.queueUrl,
       },
-      bundling: {
-        nodeModules: ["@aws-sdk/client-s3", "@aws-sdk/client-sqs", "csv-parser"],
-      },
     });
 
+    // 5) Grant permissions
+    importBucket.grantReadWrite(importProductsFileLambda);
     importBucket.grantRead(importFileParserLambda);
     catalogItemsQueue.grantSendMessages(importFileParserLambda);
 
-    //  Configure S3 Event Notification to Trigger importFileParserLambda
+    // 6) S3 triggers importFileParser on "uploaded/" prefix
     importBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3n.LambdaDestination(importFileParserLambda),
       { prefix: 'uploaded/' }
     );
 
-    //  Output API Gateway URL
-    new cdk.CfnOutput(this, 'ImportServiceApiUrl', {
-      value: `https://${this.region}.amazonaws.com/prod/import`,
+    // 7) API Gateway
+    const api = new RestApi(this, 'ImportApi', {
+      restApiName: 'Import Service',
+    });
+    const importResource = api.root.addResource('import');
+
+    // 8) Reference the deployed authorizer by ARN
+    // e.g. "arn:aws:lambda:us-east-1:123456789012:function:AuthorizationServiceStack-basicAuthorizerF74DD00A"
+    // stored in .env: AUTHORIZER_ARN=arn:aws:lambda:us-east-1:...:function:AuthorizationServiceStack-basicAuthorizerF74DD00A
+    const authorizerFn = lambda.Function.fromFunctionArn(
+      this,
+      'ImportedBasicAuthorizer',
+      process.env.AUTHORIZER_ARN
+    );
+
+    const authorizer = new TokenAuthorizer(this, 'ImportAuth', {
+      handler: authorizerFn,
+      resultsCacheTtl: Duration.seconds(0),
+      identitySource: 'method.request.header.Authorization',
+    });
+
+    // 9) Use authorizer for GET /import
+    importResource.addMethod('GET', new LambdaIntegration(importProductsFileLambda), {
+      authorizer,
+    });
+
+    // 10) Additional explicit Lambda perms
+    new lambda.CfnPermission(this, 'ApiGatewayPermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: importProductsFileLambda.functionName,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `${api.arnForExecuteApi()}/*/*/import`,
+    });
+
+    new lambda.CfnPermission(this, 'ParserLambdaS3InvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: importFileParserLambda.functionName,
+      principal: 's3.amazonaws.com',
+      sourceArn: importBucket.bucketArn,
     });
   }
 }

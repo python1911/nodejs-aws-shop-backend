@@ -1,66 +1,30 @@
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { handler } = require("../getProductsById");
+const { mockClient } = require("aws-sdk-client-mock");
 const { DynamoDBDocumentClient, GetCommand } = require("@aws-sdk/lib-dynamodb");
 
-const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION || "us-east-1" });
-const docClient = DynamoDBDocumentClient.from(dbClient);
+const mockDynamoDB = mockClient(DynamoDBDocumentClient);
 
-const PRODUCTS_TABLE = process.env.PRODUCTS_TABLE || "Products";
-const STOCKS_TABLE = process.env.STOCKS_TABLE || "Stocks";
+beforeEach(() => {
+  mockDynamoDB.reset();
+});
 
-exports.handler = async (event) => {
-    try {
-        console.log("Incoming Request:", event);
+test("should return product 1 when productId is 1", async () => {
+  mockDynamoDB.on(GetCommand).resolves({ Item: { id: "1", title: "Test Product", price: 10 } });
 
-        const { productId } = event.pathParameters;
-        console.log(`Fetching product with ID: ${productId}`);
+  const event = { pathParameters: { productId: "1" } };
+  const result = await handler(event);
 
-        // Fetch product from Products table
-        const productResult = await docClient.send(new GetCommand({
-            TableName: PRODUCTS_TABLE,
-            Key: { id: productId }
-        }));
+  expect(result.statusCode).toBe(200);
+  const product = JSON.parse(result.body);
+  expect(product.id).toBe("1");
+});
 
-        if (!productResult.Item) {
-            console.log(`Product with ID ${productId} not found.`);
-            return {
-                statusCode: 404,
-                headers: {
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "OPTIONS, GET",
-                    "Access-Control-Allow-Headers": "Content-Type"
-                },
-                body: JSON.stringify({ message: "Product not found" })
-            };
-        }
+test("should return 404 for an unknown productId", async () => {
+  mockDynamoDB.on(GetCommand).resolves({}); // No Item found
 
-        // Fetch stock information from Stocks table
-        const stockResult = await docClient.send(new GetCommand({
-            TableName: STOCKS_TABLE,
-            Key: { product_id: productId }
-        }));
+  const event = { pathParameters: { productId: "unknown" } };
+  const result = await handler(event);
 
-        const count = stockResult.Item ? stockResult.Item.count : 0;
-
-        // Construct response with product and stock count
-        const productWithStock = { ...productResult.Item, count };
-
-        console.log("Returning product:", productWithStock);
-
-        return {
-            statusCode: 200,
-            headers: {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "OPTIONS, GET",
-                "Access-Control-Allow-Headers": "Content-Type",
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(productWithStock)
-        };
-    } catch (error) {
-        console.error("Error fetching product by ID:", error);
-        return {
-            statusCode: 500,
-            body: JSON.stringify({ message: "Internal Server Error" })
-        };
-    }
-};
+  expect(result.statusCode).toBe(404);
+  expect(JSON.parse(result.body).message).toBe("Product not found");
+});
